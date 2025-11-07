@@ -281,6 +281,67 @@ fn create_system_command(claude_path: &str, args: Vec<String>, project_path: &st
     cmd
 }
 
+/// Creates a system binary command with the given arguments and app context
+fn create_system_command_with_app(
+    app_handle: &tauri::AppHandle,
+    claude_path: &str,
+    args: Vec<String>,
+    project_path: &str,
+) -> Command {
+    let mut cmd = create_command_with_env(claude_path);
+
+    // Try to get Node.js path from database and add it to PATH
+    if let Ok(node_path) = get_node_path_from_db(app_handle) {
+        if let Some(node_dir) = std::path::Path::new(&node_path).parent() {
+            let node_dir_str = node_dir.to_string_lossy().to_string();
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", node_dir_str, current_path);
+            cmd.env("PATH", new_path);
+            log::info!("Added Node.js directory to PATH: {}", node_dir_str);
+        }
+    }
+
+    // Add all arguments
+    for arg in args {
+        cmd.arg(arg);
+    }
+
+    cmd.current_dir(project_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    cmd
+}
+
+/// Get Node.js path from database
+fn get_node_path_from_db(app_handle: &tauri::AppHandle) -> Result<String, String> {
+    if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+        let db_path = app_data_dir.join("agents.db");
+        if db_path.exists() {
+            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                match conn.query_row(
+                    "SELECT value FROM app_settings WHERE key = 'node_binary_path'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                ) {
+                    Ok(path) => {
+                        log::info!("Retrieved Node.js path from database: {}", path);
+                        return Ok(path);
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {
+                        log::debug!("Node.js path not set in database");
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to get Node.js path from database: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    Err("Node.js path not found in database".to_string())
+}
+
 /// Starts watching the Claude projects directory for the specific project
 #[tauri::command]
 pub async fn watch_claude_project_directory(
@@ -969,7 +1030,7 @@ pub async fn execute_claude_code(
         "--dangerously-skip-permissions".to_string(),
     ];
 
-    let cmd = create_system_command(&claude_path, args, &project_path);
+    let cmd = create_system_command_with_app(&app, &claude_path, args, &project_path);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 
@@ -1007,7 +1068,7 @@ pub async fn continue_claude_code(
         "--dangerously-skip-permissions".to_string(),
     ];
 
-    let cmd = create_system_command(&claude_path, args, &project_path);
+    let cmd = create_system_command_with_app(&app, &claude_path, args, &project_path);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 
@@ -1048,7 +1109,7 @@ pub async fn resume_claude_code(
         "--dangerously-skip-permissions".to_string(),
     ];
 
-    let cmd = create_system_command(&claude_path, args, &project_path);
+    let cmd = create_system_command_with_app(&app, &claude_path, args, &project_path);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 

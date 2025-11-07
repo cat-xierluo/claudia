@@ -163,8 +163,18 @@ export function AgentRunOutputViewer({
       setLoading(true);
 
       // If we have a session_id, try to load from JSONL file first
-      if (run.session_id && run.session_id !== '') {
+      if (run.session_id && run.session_id !== '' && run.session_id !== 'N/A') {
         try {
+          // Check if session_id is a valid UUID format
+          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          if (!uuidRegex.test(run.session_id)) {
+            console.warn('Invalid session ID format:', run.session_id);
+            setMessages([]);
+            setRawJsonlOutput([]);
+            setLoading(false);
+            return;
+          }
+
           const history = await api.loadAgentSessionHistory(run.session_id);
           
           // Convert history to messages format

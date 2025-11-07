@@ -310,6 +310,16 @@ pub fn init_database(app: &AppHandle) -> SqliteResult<Connection> {
         [],
     );
 
+    // Clean up invalid session_id formats (e.g., "agent-75348ff8")
+    // These are not valid UUIDs and should be cleared
+    let _ = conn.execute(
+        "UPDATE agent_runs SET session_id = ''
+         WHERE session_id != ''
+         AND session_id != 'N/A'
+         AND session_id NOT GLOB '[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]'",
+        [],
+    );
+
     // Create trigger to update the updated_at timestamp
     conn.execute(
         "CREATE TRIGGER IF NOT EXISTS update_agent_timestamp 
@@ -1900,7 +1910,10 @@ pub async fn set_claude_binary_path(db: State<'_, AgentDb>, path: String) -> Res
         }
     }
 
-    // Insert or update the setting
+    // Try to auto-detect the Node.js path from the Claude binary path
+    let node_path = detect_node_path_from_claude_path(&path);
+
+    // Insert or update the settings
     conn.execute(
         "INSERT INTO app_settings (key, value) VALUES ('claude_binary_path', ?1)
          ON CONFLICT(key) DO UPDATE SET value = ?1",
@@ -1908,7 +1921,79 @@ pub async fn set_claude_binary_path(db: State<'_, AgentDb>, path: String) -> Res
     )
     .map_err(|e| format!("Failed to save Claude binary path: {}", e))?;
 
+    // Save the detected Node.js path if found
+    if let Some(node_path) = node_path {
+        if let Err(e) = conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('node_binary_path', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = ?1",
+            params![node_path],
+        ) {
+            warn!("Failed to save Node.js binary path: {}", e);
+        }
+
+        info!("Auto-detected and saved Node.js path: {}", node_path);
+    } else {
+        warn!("Could not auto-detect Node.js path from Claude binary: {}", path);
+    }
+
     Ok(())
+}
+
+/// Auto-detect Node.js path from Claude binary path
+fn detect_node_path_from_claude_path(claude_path: &str) -> Option<String> {
+    let claude_path_buf = std::path::PathBuf::from(claude_path);
+
+    // Case 1: NVM installation (e.g., ~/.nvm/versions/node/v20.10.0/bin/claude)
+    if let Some(nvm_idx) = claude_path.to_string().find("/.nvm/versions/node/") {
+        if let Some(slash_idx) = claude_path[nvm_idx..].find('/') {
+            let after_nvm = &claude_path[nvm_idx + slash_idx + 1..]; // e.g., "v20.10.0/bin/claude"
+            if let Some(version_end) = after_nvm.find('/') {
+                let version = &after_nvm[..version_end]; // e.g., "v20.10.0"
+                let node_path = format!("{}/.nvm/versions/node/{}/bin/node",
+                    &claude_path[..nvm_idx], version);
+                let node_path_buf = std::path::PathBuf::from(&node_path);
+                if node_path_buf.exists() {
+                    info!("Detected Node.js via NVM: {}", node_path);
+                    return Some(node_path);
+                }
+            }
+        }
+    }
+
+    // Case 2: Check if both node and claude are in the same bin directory
+    if let Some(parent) = claude_path_buf.parent() {
+        let node_path = parent.join("node");
+        if node_path.exists() {
+            info!("Detected Node.js in same directory: {}", node_path.display());
+            return Some(node_path.to_string_lossy().to_string());
+        }
+
+        // Case 3: Homebrew or system installation
+        if parent.to_string_lossy().contains("/bin") {
+            let node_path = parent.join("node");
+            if node_path.exists() {
+                info!("Detected Node.js in bin directory: {}", node_path.display());
+                return Some(node_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    // Case 4: Try to find node using 'which node' with enhanced PATH
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("node")
+        .env("PATH", crate::claude_binary::build_enhanced_path())
+        .output()
+    {
+        if output.status.success() {
+            let node_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !node_path.is_empty() {
+                info!("Detected Node.js via 'which': {}", node_path);
+                return Some(node_path);
+            }
+        }
+    }
+
+    None
 }
 
 /// List all available Claude installations on the system
@@ -2211,6 +2296,15 @@ pub async fn load_agent_session_history(
     session_id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
     log::info!("Loading agent session history for session: {}", session_id);
+
+    // Validate session_id is a valid UUID format
+    let uuid_regex = regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        .map_err(|e| format!("Failed to create UUID regex: {}", e))?;
+
+    if !uuid_regex.is_match(&session_id) {
+        log::warn!("Invalid session ID format: {}", session_id);
+        return Err(format!("Invalid session ID format: {}", session_id));
+    }
 
     let claude_dir = dirs::home_dir()
         .ok_or("Failed to get home directory")?

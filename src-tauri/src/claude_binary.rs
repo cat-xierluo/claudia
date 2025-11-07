@@ -655,7 +655,7 @@ pub fn create_command_with_env(program: &str) -> Command {
 
 /// Build an enhanced PATH that includes all possible Claude installation locations
 /// This is especially important for DMG/packaged applications where PATH may be limited
-fn build_enhanced_path() -> String {
+pub fn build_enhanced_path() -> String {
     let mut paths = Vec::new();
 
     // Start with current PATH
@@ -678,6 +678,56 @@ fn build_enhanced_path() -> String {
         }
     }
 
+    // Add Node.js specific paths (crucial for shebang execution)
+    if let Ok(home) = std::env::var("HOME") {
+        // Add all NVM node versions and their bin directories
+        let nvm_dir = PathBuf::from(&home).join(".nvm/versions/node");
+        if nvm_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
+                for entry in entries.flatten() {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let bin_path = entry.path().join("bin");
+                        if bin_path.exists() {
+                            paths.push(bin_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add other common Node.js version managers and their paths
+        let node_version_managers = vec![
+            (format!("{}/.nodenv/bin", home), false),
+            (format!("{}/.fnm/fnl", home), true),  // true means has wildcard
+            (format!("{}/.asdf/installs/nodejs", home), true),  // true means has wildcard
+        ];
+
+        for (pattern, has_wildcard) in node_version_managers {
+            if has_wildcard {
+                // Handle patterns with wildcards
+                if let Some(prefix_end) = pattern.find('*') {
+                    let prefix = &pattern[..prefix_end];
+                    let parent_buf = PathBuf::from(prefix);
+                    let parent = parent_buf.parent().unwrap_or(&parent_buf);
+                    if parent.exists() {
+                        if let Ok(entries) = std::fs::read_dir(parent) {
+                            for entry in entries.flatten() {
+                                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                    let full_path = entry.path().join("bin");
+                                    if full_path.exists() {
+                                        paths.push(full_path.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if PathBuf::from(&pattern).exists() {
+                paths.push(pattern);
+            }
+        }
+    }
+
     // Add user-specific paths
     if let Ok(home) = std::env::var("HOME") {
         let user_paths = vec![
@@ -694,21 +744,6 @@ fn build_enhanced_path() -> String {
         for path in user_paths {
             if PathBuf::from(&path).exists() {
                 paths.push(path);
-            }
-        }
-
-        // Add all NVM node versions
-        let nvm_dir = PathBuf::from(&home).join(".nvm/versions/node");
-        if nvm_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
-                for entry in entries.flatten() {
-                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        let bin_path = entry.path().join("bin");
-                        if bin_path.exists() {
-                            paths.push(bin_path.to_string_lossy().to_string());
-                        }
-                    }
-                }
             }
         }
     }
