@@ -135,7 +135,7 @@ xcode-select --install
 
 ### 构建步骤
 ```bash
-git clone https://github.com/yovinchen/claudia.git
+git clone https://github.com/cat-xierluo/claudia.git
 cd claudia
 bun install
 bun run tauri dev    # 开发模式
@@ -210,10 +210,10 @@ claudia/
 ---
 
 <div align="center">
-  <p><strong>由 <a href="https://github.com/yovinchen">YovinChen</a> 改进</strong></p>
-  <p><a href="https://github.com/yovinchen/claudia/issues">报告 Bug</a> · <a href="https://github.com/yovinchen/claudia/issues">请求功能</a></p>
+  <p><strong>由 <a href="https://github.com/cat-xierluo">cat-xierluo</a> 维护</strong></p>
+  <p><a href="https://github.com/cat-xierluo/claudia/issues">报告 Bug</a> · <a href="https://github.com/cat-xierluo/claudia/issues">请求功能</a></p>
 </div>
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yovinchen/claudia&type=Date)](https://star-history.com/#yovinchen/claudia&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=cat-xierluo/claudia&type=Date)](https://star-history.com/#cat-xierluo/claudia&Date)
